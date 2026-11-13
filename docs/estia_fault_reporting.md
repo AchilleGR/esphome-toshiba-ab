@@ -16,13 +16,21 @@ imply an all-clear. Both become unknown on the existing master-connection timeou
 and require another explicit fault or clear report after reconnection. The native
 API propagates the unknown state to Home Assistant.
 
-Detection is entirely passive, including in read-only mode. This feature adds no
-polling, reset commands or other bus traffic. Unsolicited `C0:29` announcements
-report faults and clears. Broadcast `A0:29` replies to another controller's
-requests are decoded too. If the ESP starts after an announcement, it retains
-the boot default until the next report. A missed clear leaves the last reported
-fault active until another explicit clear or a connection timeout; ordinary bus
-traffic does not resolve that uncertainty.
+The component sends one `E0:61:29` fault-status query at startup, after the existing
+40-second startup delay, address selection and master confirmation. It sends one
+more query after each master-connection timeout and recovery. Queries use the
+component's selected remote address and respect the existing bus-quiet guards.
+There is no periodic polling or write-command retry. Sending the query does not
+change the diagnostics; a valid fault or clear response updates them.
+
+Read-only mode suppresses transmission and remains entirely passive. A pending
+refresh waits until writes are allowed. These refreshes concern communication
+with the master on the A/B bus, not Wi-Fi or Home Assistant API reconnections.
+
+Unsolicited `C0:29` announcements report faults and clears. Broadcast `A0:29`
+replies to the component's or another controller's requests are decoded too.
+A missed clear leaves the last reported fault active until another explicit clear
+or a connection timeout; ordinary bus traffic does not resolve that uncertainty.
 
 The optional existing `remote_error` sensor remains independent: it reports a
 remote controller's error indication, whereas these diagnostics report the

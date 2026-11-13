@@ -1557,6 +1557,130 @@ static void a0_demand_startup_checks() {
   }
 }
 
+static void first_gen_fault_refresh_checks() {
+  for (uint8_t remote : {0x60, 0x61}) {
+    RecordingUart uart;
+    TestEstia unit;
+    unit.set_uart_parent(&uart);
+    unit.set_frame_format(FrameFormat::ESTIA);
+    unit.set_master_address(0x71);
+    unit.set_remote_address(remote);
+    unit.set_autonomous(false);
+    text_sensor::TextSensor code;
+    binary_sensor::BinarySensor active;
+    unit.set_fault_code_text_sensor(&code);
+    unit.set_fault_active_binary_sensor(&active);
+    if (millis() == 0) delay(1);
+    auto quiet_bus = [&]() {
+      unit.last_received_frame_millis_ = millis() - 1000;
+      unit.last_sent_frame_millis_ = millis() - 1000;
+    };
+    auto keepalive = master_keepalive(FrameFormat::ESTIA);
+    keepalive.raw[1] = 0x71;
+    keepalive.raw[6] = dn_checksum(keepalive.raw, 6);
+    unit.boot_millis_ = millis();
+    assert(unit.receive_data_frame(&keepalive));
+    quiet_bus();
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());  // Startup silence.
+    unit.boot_millis_ = millis() - INITIAL_FRAME_SEND_BLOCK_MILLIS;
+    unit.set_read_only(true);
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());
+    unit.set_read_only(false);
+    unit.master_address_confirmed_ = false;
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());
+    unit.master_address_confirmed_ = true;
+    unit.remote_address_available_ = false;
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());
+    unit.remote_address_available_ = true;
+    unit.last_master_alive_millis_ = millis() - LAST_ALIVE_TIMEOUT_MILLIS - 1;
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());  // No request to an offline master.
+    assert(unit.receive_data_frame(&keepalive));
+    unit.last_received_frame_millis_ = millis();
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());  // Post-RX quiet time.
+    quiet_bus();
+    unit.last_master_keepalive_ms_ = millis() - 4500;
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());  // Keep-alive hold-off.
+    unit.last_master_keepalive_ms_ = millis();
+
+    DataFrame report{};
+    report.set_tu2c(true);
+    const uint8_t fault[] = {0x0C, 0x71, 0xFF, 0xE0, 0xA0, 0x29, 0x70, 0x77, 0};
+    std::copy(std::begin(fault), std::end(fault), report.raw);
+    report.raw[8] = dn_checksum(report.raw, 8);
+    assert(unit.receive_data_frame(&report));
+    assert(code.state == "F23" && active.state);
+    unit.send_estia_first_gen_ping_();
+    quiet_bus();
+    unit.loop();
+    assert(uart.writes.size() == 1 && unit.write_queue_.size() == 1);  // PING precedes the queued query.
+    unit.set_read_only(true);  // Discard the unsent query without losing the refresh.
+    assert(unit.write_queue_.empty());
+    unit.set_read_only(false);
+    quiet_bus();
+    unit.loop();
+    const std::vector<uint8_t> expected{0xF0, 0xF0, 0x0A, remote, 0x71, 0xE0,
+                                        0x61, 0x29, static_cast<uint8_t>(0x45 + remote - 0x60), 0xA0};
+    assert(uart.writes.size() == 2 && uart.writes.back() == expected);
+    assert(!unit.last_unconfirmed_command_.has_value());  // The read is not retried as a write command.
+    assert(code.state == "F23" && active.state);  // Sending a query cannot clear a fault.
+    for (unsigned i = 0; i < 3; ++i) {
+      assert(unit.receive_data_frame(&keepalive));
+      quiet_bus();
+      unit.loop();
+      assert(uart.writes.size() == 2 && unit.write_queue_.empty());
+    }
+
+    unit.last_master_alive_millis_ = millis() - LAST_ALIVE_TIMEOUT_MILLIS - 1;
+    unit.loop();
+    unit.loop();
+    assert(!code.has_state() && !active.has_state());
+    assert(uart.writes.size() == 2);
+    auto status = first_gen_status(0x40, false, 0);
+    status.raw[1] = 0x71;
+    status.raw[17] = dn_checksum(status.raw, 17);
+    assert(unit.receive_data_frame(&status));  // Ordinary status restores master communication.
+    unit.set_read_only(true);
+    quiet_bus();
+    unit.loop();
+    assert(uart.writes.size() == 2 && !code.has_state() && !active.has_state());
+    unit.set_read_only(false);
+    quiet_bus();
+    unit.loop();
+    assert(uart.writes.size() == 3 && uart.writes.back() == expected);
+    assert(!code.has_state() && !active.has_state());  // Await the actual fault/clear response.
+    quiet_bus();
+    unit.loop();
+    assert(uart.writes.size() == 3 && unit.write_queue_.empty());
+    report.raw[7] = 0;
+    report.raw[8] = dn_checksum(report.raw, 8);
+    assert(unit.receive_data_frame(&report));
+    assert(code.has_state() && code.state == "None" && active.has_state() && !active.state);
+  }
+  for (auto format : {FrameFormat::A0, FrameFormat::NORMAL, FrameFormat::HM, FrameFormat::TU2C}) {
+    RecordingUart uart;
+    TestEstia unit;
+    unit.set_uart_parent(&uart);
+    unit.set_frame_format(format);
+    unit.set_autonomous(false);
+    unit.master_address_confirmed_ = true;
+    unit.last_master_alive_millis_ = millis();
+    unit.boot_millis_ = millis() - INITIAL_FRAME_SEND_BLOCK_MILLIS;
+    unit.last_received_frame_millis_ = millis() - 1000;
+    unit.last_sent_frame_millis_ = millis() - 1000;
+    text_sensor::TextSensor code;
+    unit.set_fault_code_text_sensor(&code);
+    unit.loop();
+    assert(uart.writes.empty() && unit.write_queue_.empty());
+  }
+}
+
 static void first_gen_fault_checks() {
   for (bool read_only : {false, true}) {
     RecordingUart uart;
@@ -2014,6 +2138,7 @@ int main() {
   a0_demand_startup_checks();
   master_keepalive_silence_checks();
   first_gen_fault_checks();
+  first_gen_fault_refresh_checks();
   first_gen_cooling_setpoint_checks();
   first_gen_dhw_mode_checks();
   first_gen_temperature_checks();

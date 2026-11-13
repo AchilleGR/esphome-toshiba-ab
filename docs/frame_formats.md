@@ -279,8 +279,9 @@ transmitting zero at boot. See [demand startup synchronization](estia_demand_emu
 ### Structure
 
 The `estia` option selects the component's first-generation Estia support path.
-This format automatically creates fault-status and fault-code diagnostics, decoded
-passively without polling. See [fault diagnostics](estia_fault_reporting.md).
+This format automatically creates fault-status and fault-code diagnostics, with
+one status query at startup and after master reconnection. See
+[fault diagnostics](estia_fault_reporting.md).
 
 When `master` is omitted, this format defaults the master address to `0x70`
 and keeps address auto-detection enabled.

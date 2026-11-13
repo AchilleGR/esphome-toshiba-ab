@@ -1973,6 +1973,7 @@ void ToshibaAbClimate::update_estia_first_gen_fault_(uint8_t code) {
 }
 
 void ToshibaAbClimate::invalidate_estia_first_gen_fault_() {
+  this->estia_first_gen_fault_query_pending_ = true;
   if (!this->estia_first_gen_fault_code_.has_value()) return;
   this->estia_first_gen_fault_code_.reset();
   if (this->fault_code_text_sensor_) {
@@ -3092,6 +3093,7 @@ void ToshibaAbClimate::loop() {
   if (bus_can_send) {
     // Do not start a sensor reply timeout while transmission is held off.
     this->drain_sensor_query_queue_();
+    this->enqueue_estia_first_gen_fault_query_(now);
     optional<DataFrame> frame_to_send{};
 
     if (this->last_unconfirmed_command_.has_value()) {
@@ -3158,6 +3160,11 @@ void ToshibaAbClimate::loop() {
         last_tu2c_sent_frame_millis_ = last_sent_frame_millis_;
       }
       auto frame = frame_to_send.value();
+      if (this->is_estia_first_gen() && frame.is_tu2c() && frame.raw[0] == 0x0A &&
+          frame.raw[1] == this->remote_address_ && frame.raw[2] == this->master_address_ &&
+          frame.raw[3] == 0xE0 && frame.raw[4] == 0x61 && frame.raw[5] == 0x29) {
+        this->estia_first_gen_fault_query_pending_ = false;
+      }
       if (this->is_estia_first_gen() && this->estia_dn_pending_ && !this->estia_dn_sent_ &&
           frame.raw[0] == 0x0D && frame.raw[1] == this->estia_dn_source_ &&
           frame.raw[2] == this->estia_dn_dest_ && frame.raw[3] == 0xE0 &&
@@ -4401,6 +4408,20 @@ static DataFrame make_estia_first_gen_frame(uint8_t src, uint8_t dst, const uint
   // derives TU2C/first-generation Estia length from raw[0].
   frame.set_tu2c(true);
   return frame;
+}
+
+void ToshibaAbClimate::enqueue_estia_first_gen_fault_query_(uint32_t now) {
+  // Called only when the existing startup, read-only and bus-quiet guards allow TX.
+  if (!this->is_estia_first_gen() || !this->estia_first_gen_fault_query_pending_ ||
+      (!this->fault_code_text_sensor_ && !this->fault_active_binary_sensor_) ||
+      !this->remote_address_available_ || !this->master_address_confirmed_ ||
+      this->last_master_alive_millis_ == 0 ||
+      now - this->last_master_alive_millis_ > LAST_ALIVE_TIMEOUT_MILLIS) return;
+  const uint8_t payload[] = {0xE0, 0x61, 0x29};
+  const auto query = make_estia_first_gen_frame(this->remote_address_, this->master_address_, payload, sizeof(payload));
+  // Queue deduplication prevents repeats while another command is ahead of us.
+  // Keep the refresh pending until TX so clearing the queue cannot lose it.
+  if (this->enqueue_command_(query)) log_tu2c_data_frame("Enqueue fault status query", &query);
 }
 
 void ToshibaAbClimate::send_estia_first_gen_zone1(bool on) {

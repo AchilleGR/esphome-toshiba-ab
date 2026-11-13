@@ -73,9 +73,13 @@ g++ -std=c++17 -Wall -Wextra -Werror -I. tests/test_climate_compat.cpp -o /tmp/t
 
 First-generation fault checks replay captured A01/F23/E09/clear broadcasts,
 verify checksum/source/destination/length rejection, independent remote status,
-no-fault boot defaults and unknown timeout/reconnection behavior, and zero added TX in writable
-and read-only modes. Configuration checks verify both default diagnostic entities
-on R410A only, including naming overrides. The first-generation ESP8266 fixture
+no-fault boot defaults and unknown timeout/reconnection behavior. Refresh checks
+verify exact query bytes from both remote roles, startup/address/master/read-only
+and bus-quiet guards, retention of a queued refresh across read-only changes,
+one query per connection, and fault states that await a real response. Other
+protocols and read-only operation send no fault queries. Configuration checks
+verify both default diagnostic entities on R410A only, including naming overrides.
+The first-generation ESP8266 fixture
 includes the native API to compile unknown-state notifications.
 
 The host suite also checks first-generation DN read/write frames, query
